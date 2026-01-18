@@ -6,6 +6,25 @@ import sys
 from src.cli.race_selection import cli_load
 from src.gui.race_selection import RaceSelectionWindow
 from PySide6.QtWidgets import QApplication
+from src.widget_manager import WidgetOrchestrator
+from src.interfaces.race_replay import TrackWidget, LeaderboardWidget, DriverDetailWidget, WeatherWidget
+import arcade
+
+def run_widget_mode(year):
+    orchestrator = WidgetOrchestrator(year)
+    
+    # Create the windows
+    track = TrackWidget(orchestrator)
+    leaderboard = LeaderboardWidget(orchestrator)
+    telemetry = DriverDetailWidget(orchestrator, "VER")
+    weather = WeatherWidget(orchestrator) # NEW
+    
+    # Register them all so they receive updates
+    orchestrator.widgets = [track, leaderboard, telemetry, weather]
+    
+    orchestrator.load_next_round()
+    arcade.schedule(lambda dt: orchestrator.update(dt), 1/60)
+    arcade.run()
 
 def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None):
   print(f"Loading F1 {year} Round {round_number} Session '{session_type}'")
@@ -95,6 +114,16 @@ if __name__ == "__main__":
     win = RaceSelectionWindow()
     win.show()
     sys.exit(app.exec())
+  
+  if "--widget-mode" in sys.argv:
+    # Get year from args or default
+    year = 2025 
+    if "--year" in sys.argv:
+        year = int(sys.argv[sys.argv.index("--year") + 1])
+    
+    # This comes from your widget_manager.py
+    run_widget_mode(year)
+    sys.exit(0)
   
   if "--cli" in sys.argv:
     cli_load()

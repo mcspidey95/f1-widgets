@@ -18,6 +18,151 @@ SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 720
 SCREEN_TITLE = "F1 Race Replay"
 
+class TrackWidget(arcade.Window):
+    def __init__(self, orchestrator):
+        super().__init__(800, 800, "F1 Track Map", resizable=True)
+        self.orch = orchestrator
+        # Storage for track geometry
+        self.screen_inner_points = []
+        self.screen_outer_points = []
+        self.world_scale = 1.0
+        self.tx = 0
+        self.ty = 0
+
+    def on_session_change(self, session, race_telemetry):
+        # When the orchestrator loads a new race, we rebuild the track map
+        # Note: You'll need to pass example_lap to this method or get it from orchestrator
+        # For simplicity, let's assume orchestrator stores the 'example_lap'
+        (self.plot_x_ref, self.plot_y_ref,
+         self.x_inner, self.y_inner,
+         self.x_outer, self.y_outer,
+         self.x_min, self.x_max,
+         self.y_min, self.y_max, self.drs_zones) = build_track_from_example_lap(self.orch.example_lap)
+        
+        # Pre-interpolate
+        self.world_inner_points = self._interpolate_points(self.x_inner, self.y_inner)
+        self.world_outer_points = self._interpolate_points(self.x_outer, self.y_outer)
+        self.update_scaling(self.width, self.height)
+
+    def _interpolate_points(self, xs, ys, interp_points=2000):
+        t_old = np.linspace(0, 1, len(xs))
+        t_new = np.linspace(0, 1, interp_points)
+        return list(zip(np.interp(t_new, t_old, xs), np.interp(t_new, t_old, ys)))
+
+    def update_scaling(self, screen_w, screen_h):
+        # Use your existing scaling logic here...
+        # For now, a simplified version:
+        world_w = max(1.0, self.x_max - self.x_min)
+        world_h = max(1.0, self.y_max - self.y_min)
+        self.world_scale = min(screen_w / world_w, screen_h / world_h) * 0.9
+        self.tx = screen_w/2 - self.world_scale * (self.x_min + self.x_max)/2
+        self.ty = screen_h/2 - self.world_scale * (self.y_min + self.y_max)/2
+        
+        self.screen_inner_points = [(x * self.world_scale + self.tx, y * self.world_scale + self.ty) for x,y in self.world_inner_points]
+        self.screen_outer_points = [(x * self.world_scale + self.tx, y * self.world_scale + self.ty) for x,y in self.world_outer_points]
+
+    def on_draw(self):
+        self.clear()
+        if not self.orch.race_telemetry: return
+        
+        # Draw Track
+        arcade.draw_line_strip(self.screen_inner_points, arcade.color.GRAY, 3)
+        arcade.draw_line_strip(self.screen_outer_points, arcade.color.GRAY, 3)
+        
+        # Draw Cars
+        idx = min(int(self.orch.frame_index), len(self.orch.race_telemetry['frames']) - 1)
+        frame = self.orch.race_telemetry['frames'][idx]
+        for code, pos in frame["drivers"].items():
+            sx = pos["x"] * self.world_scale + self.tx
+            sy = pos["y"] * self.world_scale + self.ty
+            color = self.orch.race_telemetry['driver_colors'].get(code, arcade.color.WHITE)
+            arcade.draw_circle_filled(sx, sy, 5, color)
+
+class LeaderboardWidget(arcade.Window):
+    def __init__(self, orchestrator):
+        super().__init__(300, 1000, "Leaderboard", resizable=True)
+        self.orch = orchestrator
+        self.leaderboard_comp = LeaderboardComponent(x=10, width=280, visible=True)
+
+    def on_session_change(self, session, race_telemetry):
+        pass # The component updates based on frames automatically
+
+    def on_draw(self):
+        self.clear()
+        if not self.orch.race_telemetry: return
+        
+        idx = min(int(self.orch.frame_index), len(self.orch.race_telemetry['frames']) - 1)
+        frame = self.orch.race_telemetry['frames'][idx]
+        
+        # Format list for the component
+        driver_list = []
+        for code, pos in frame["drivers"].items():
+            color = self.orch.race_telemetry['driver_colors'].get(code, arcade.color.WHITE)
+            progress = pos.get("dist", 0) # Simplification
+            driver_list.append((code, color, pos, progress))
+        
+        driver_list.sort(key=lambda x: x[3], reverse=True)
+        self.leaderboard_comp.set_entries(driver_list)
+        self.leaderboard_comp.draw(self)
+
+class DriverDetailWidget(arcade.Window):
+    def __init__(self, orchestrator, driver_code="VER"):
+        super().__init__(400, 220, f"Telemetry: {driver_code}")
+        self.orch = orchestrator
+        self.driver_code = driver_code
+
+    def on_session_change(self, session, race_telemetry):
+        self.set_caption(f"{self.driver_code} - {session.event['EventName']}")
+
+    def on_draw(self):
+        self.clear()
+        if not self.orch.race_telemetry: return
+        
+        idx = min(int(self.orch.frame_index), len(self.orch.race_telemetry['frames']) - 1)
+        frame = self.orch.race_telemetry['frames'][idx]
+        data = frame['drivers'].get(self.driver_code)
+        
+        if data:
+            arcade.draw_text(f"DRIVER: {self.driver_code}", 20, 180, arcade.color.GOLD, 18, bold=True)
+            arcade.draw_text(f"Speed: {data['speed']} km/h", 20, 140, arcade.color.WHITE, 16)
+            arcade.draw_text(f"Lap: {data.get('lap', 1)}", 20, 110, arcade.color.WHITE, 16)
+            
+            # FIXED: Change lrtb to lrbt
+            # Arguments: Left, Right, Bottom, Top, Color
+            throttle_val = data.get('throttle', 0)
+            # Throttle Bar (Green)
+            arcade.draw_lrbt_rectangle_filled(20, 20 + (throttle_val * 2), 50, 70, arcade.color.GREEN)
+            arcade.draw_text("Throttle", 20, 30, arcade.color.GRAY, 10)
+
+class WeatherWidget(arcade.Window):
+    def __init__(self, orchestrator):
+        super().__init__(300, 200, "Track Conditions")
+        self.orch = orchestrator
+
+    def on_session_change(self, session, race_telemetry):
+        pass
+
+    def on_draw(self):
+        self.clear()
+        if not self.orch.race_telemetry: return
+        
+        idx = min(int(self.orch.frame_index), len(self.orch.race_telemetry['frames']) - 1)
+        frame = self.orch.race_telemetry['frames'][idx]
+        weather = frame.get("weather", {})
+        
+        arcade.draw_text("LIVE WEATHER", 20, 160, arcade.color.CYAN, 16, bold=True)
+        
+        if weather:
+            temp = weather.get('AirTemp', 'N/A')
+            track_temp = weather.get('TrackTemp', 'N/A')
+            rain = "YES" if weather.get('Rainfall') else "NO"
+            
+            arcade.draw_text(f"Air Temp: {temp}°C", 20, 120, arcade.color.WHITE, 14)
+            arcade.draw_text(f"Track: {track_temp}°C", 20, 90, arcade.color.WHITE, 14)
+            arcade.draw_text(f"Rain: {rain}", 20, 60, arcade.color.SKY_BLUE, 14, bold=True)
+        else:
+            arcade.draw_text("No Data", 20, 120, arcade.color.GRAY, 14)
+
 class F1RaceReplayWindow(arcade.Window):
     def __init__(self, frames, track_statuses, example_lap, drivers, title,
                  playback_speed=1.0, driver_colors=None, circuit_rotation=0.0,
